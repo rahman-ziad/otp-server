@@ -14,7 +14,7 @@ try {
   });
 } catch (error) {
   console.error('Error initializing Firebase:', error);
-  process.exit(1); // Exit if Firebase initialization fails
+  process.exit(1);
 }
 
 // SMS.net.bd configuration
@@ -36,6 +36,7 @@ function generateOTP() {
 
 // Send OTP endpoint
 app.post('/api/send-otp', async (req, res) => {
+  console.log('Request body:', req.body);
   const { phoneNumber } = req.body;
   if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
 
@@ -103,7 +104,28 @@ app.post('/api/verify-otp', async (req, res) => {
       createdAt: Date.now(),
     });
 
-    res.status(200).json({ jwt: token, refreshToken });
+    // Check if player document exists
+    const playerQuery = await db.collection('players')
+      .where('phone_number', '==', phoneNumber)
+      .get();
+    
+    let isProfileComplete = false;
+    if (playerQuery.empty) {
+      // Create new player document for new user
+      await db.collection('players').add({
+        phone_number: phoneNumber,
+        name: '',
+        in_game_name: '',
+        image_url: '',
+        editedby_player: false,
+        created_at: Date.now(),
+      });
+    } else {
+      // Check if profile is complete
+      isProfileComplete = playerQuery.docs[0].data().editedby_player === true;
+    }
+
+    res.status(200).json({ jwt: token, refreshToken, isProfileComplete });
   } catch (error) {
     console.error('Error verifying OTP:', error);
     res.status(500).json({ error: 'OTP verification failed' });
