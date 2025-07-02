@@ -7,9 +7,15 @@ const app = express();
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
-admin.initializeApp({
-  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_CREDENTIALS)),
-});
+try {
+  const credentials = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+  admin.initializeApp({
+    credential: admin.credential.cert(credentials),
+  });
+} catch (error) {
+  console.error('Error initializing Firebase:', error);
+  process.exit(1); // Exit if Firebase initialization fails
+}
 
 // SMS.net.bd configuration
 const SMS_API_KEY = process.env.SMS_API_KEY || 'OSF2WmBqBivoiM6q8MlxiSRo19ZnYhfbz24JTuMv';
