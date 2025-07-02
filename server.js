@@ -20,7 +20,7 @@ try {
 const SMS_API_URL = 'https://api.mimsms.com/api/SmsSending/SMS';
 const SMS_USERNAME = 'fahimmaruf@gmail.com';
 const SMS_API_KEY = 'VAUSWN3QKZ7FQ0H';
-const SMS_SENDER_NAME = 'MiM SMS'; // Update to your registered sender ID
+const SMS_SENDER_NAME = '8809601003504'; // Replace with your MiMSMS-approved sender ID
 const SMS_TRANSACTION_TYPE = 'T'; // Transactional SMS
 
 // JWT configuration
@@ -42,12 +42,15 @@ app.post('/api/send-otp', async (req, res) => {
   const { phoneNumber } = req.body;
   if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
 
+  // Normalize phone number by removing '+' sign
+  const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+
   const otp = generateOTP();
   const sessionId = Math.random().toString(36).substring(2);
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5-minute expiry
 
   try {
-    // Store OTP in Firestore
+    // Store OTP in Firestore with original phoneNumber
     await otpCollection.doc(sessionId).set({ phoneNumber, otp, expiresAt });
 
     // Send OTP via MiMSMS using fetch
@@ -60,11 +63,11 @@ app.post('/api/send-otp', async (req, res) => {
       body: JSON.stringify({
         UserName: SMS_USERNAME,
         Apikey: SMS_API_KEY,
-        MobileNumber: phoneNumber,
+        MobileNumber: normalizedPhoneNumber,
         CampaignId: 'null',
         SenderName: SMS_SENDER_NAME,
         TransactionType: SMS_TRANSACTION_TYPE,
-        Message: `Welcome to sportsstation. You're OTP is ${otp}`,
+        Message: `Welcome to sportsstation. Your OTP is ${otp}`,
       }),
     });
 
