@@ -1,7 +1,7 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
-const request = require('request');
+const request = require('request-promise-native');
 const app = express();
 
 app.use(express.json());
@@ -17,9 +17,12 @@ try {
   process.exit(1);
 }
 
-// SMS.net.bd configuration
-const SMS_API_KEY = process.env.SMS_API_KEY || 'OSF2WmBqBivoiM6q8MlxiSRo19ZnYhfbz24JTuMv';
-const SMS_API_URL = 'https://api.sms.net.bd/sendsms';
+// MiMSMS configuration
+const SMS_API_URL = 'https://api.mimsms.com/api/SmsSending/SMS';
+const SMS_USERNAME = 'fahimmaruf@gmail.com';
+const SMS_API_KEY = 'VAUSWN3QKZ7FQ0H';
+const SMS_SENDER_NAME = 'MiM SMS'; // Update to your registered sender ID
+const SMS_TRANSACTION_TYPE = 'T'; // Transactional SMS
 
 // JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
@@ -48,29 +51,34 @@ app.post('/api/send-otp', async (req, res) => {
     // Store OTP in Firestore
     await otpCollection.doc(sessionId).set({ phoneNumber, otp, expiresAt });
 
-    // Send OTP via SMS.net.bd
+    // Send OTP via MiMSMS
     const options = {
       method: 'POST',
       url: SMS_API_URL,
-      formData: {
-        api_key: SMS_API_KEY,
-        msg: `Your OTP is ${otp}`,
-        to: phoneNumber,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
       },
+      body: JSON.stringify({
+        UserName: SMS_USERNAME,
+        Apikey: SMS_API_KEY,
+        MobileNumber: phoneNumber,
+        CampaignId: 'null',
+        SenderName: SMS_SENDER_NAME,
+        TransactionType: SMS_TRANSACTION_TYPE,
+        Message: `Welcome to sportsstation. You’re OTP is ${otp}`,
+      }),
     };
 
-    request(options, (error, response, body) => {
-      if (error) {
-        console.error('Error sending OTP:', error);
-        return res.status(500).json({ error: 'Failed to send OTP' });
-      }
-      const result = JSON.parse(body);
-      if (result.error !== 0) {
-        console.error('SMS.net.bd error:', result.msg);
-        return res.status(500).json({ error: `Failed to send OTP: ${result.msg}` });
-      }
-      res.status(200).json({ sessionId });
-    });
+    const response = await request(options);
+    const result = JSON.parse(response);
+
+    if (result.statusCode !== '200' || result.status !== 'Success') {
+      console.error('MiMSMS error:', result.responseResult);
+      return res.status(500).json({ error: `Failed to send OTP: ${result.responseResult}` });
+    }
+
+    res.status(200).json({ sessionId });
   } catch (error) {
     console.error('Error sending OTP:', error);
     res.status(500).json({ error: 'Failed to send OTP' });
