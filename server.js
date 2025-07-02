@@ -1,7 +1,6 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
-const request = require('request-promise-native');
 const app = express();
 
 app.use(express.json());
@@ -51,10 +50,9 @@ app.post('/api/send-otp', async (req, res) => {
     // Store OTP in Firestore
     await otpCollection.doc(sessionId).set({ phoneNumber, otp, expiresAt });
 
-    // Send OTP via MiMSMS
-    const options = {
+    // Send OTP via MiMSMS using fetch
+    const response = await fetch(SMS_API_URL, {
       method: 'POST',
-      url: SMS_API_URL,
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
@@ -66,12 +64,11 @@ app.post('/api/send-otp', async (req, res) => {
         CampaignId: 'null',
         SenderName: SMS_SENDER_NAME,
         TransactionType: SMS_TRANSACTION_TYPE,
-        Message: `Welcome to sportsstation. You’re OTP is ${otp}`,
+        Message: `Welcome to sportsstation. You're OTP is ${otp}`,
       }),
-    };
+    });
 
-    const response = await request(options);
-    const result = JSON.parse(response);
+    const result = await response.json();
 
     if (result.statusCode !== '200' || result.status !== 'Success') {
       console.error('MiMSMS error:', result.responseResult);
