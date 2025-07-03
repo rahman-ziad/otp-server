@@ -87,56 +87,65 @@ app.post('/api/send-otp', async (req, res) => {
 
 // Verify OTP endpoint
 app.post('/api/verify-otp', async (req, res) => {
-  const { phoneNumber, otp, sessionId } = req.body;
-  if (!phoneNumber || !otp || !sessionId) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  const { phoneNumber, otp } = req.body;
+
+  if (!phoneNumber || !otp) {
+    return res.status(400).json({ error: 'Phone number and OTP are required' });
   }
 
   try {
-    const otpDoc = await otpCollection.doc(sessionId).get();
-    if (!otpDoc.exists) return res.status(400).json({ error: 'Invalid session ID' });
+    // Fetch OTP from Firestore
+    const otpDoc = await admin.firestore()
+      .collection('otps')
+      .doc(phoneNumber)
+      .get();
 
-    const data = otpDoc.data();
-    if (data.phoneNumber !== phoneNumber || data.otp !== otp || Date.now() > data.expiresAt) {
-      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    if (!otpDoc.exists) {
+      return res.status(400).json({ error: 'No OTP found for this phone number' });
     }
 
-    await otpCollection.doc(sessionId).delete();
+    const storedOtp = otpDoc.data().otp;
+    const expiresAt = otpDoc.data().expiresAt.toDate();
 
-    const jwtPayload = { phoneNumber };
-    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '1h' });
-    const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '30d' });
+    if (expiresAt < new Date()) {
+      // Delete expired OTP
+      await admin.firestore().collection('otps').doc(phoneNumber).delete();
+      return res.status(400).json({ error: 'OTP has expired' });
+    }
 
-    await db.collection('refreshTokens').doc(phoneNumber).set({
+    if (storedOtp !== otp) {
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    // OTP is valid, generate JWT and refresh token
+    const jwtToken = jwt.sign(
+      { phoneNumber },
+      process.env.JWT_SECRET || 'your_jwt_secret',
+      { expiresIn: '1h' }
+    );
+    const refreshToken = jwt.sign(
+      { phoneNumber },
+      process.env.REFRESH_SECRET || 'your_refresh_secret',
+      { expiresIn: '7d' }
+    );
+
+    // Store refresh token in Firestore
+    await admin.firestore().collection('refreshTokens').doc(phoneNumber).set({
       refreshToken,
-      createdAt: Date.now(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Check if player document exists
-    const playerQuery = await db.collection('players')
-      .where('phone_number', '==', phoneNumber)
-      .get();
-    
-    let isProfileComplete = false;
-    if (playerQuery.empty) {
-      // Create new player document for new user
-      await db.collection('players').add({
-        phone_number: phoneNumber,
-        name: '',
-        in_game_name: '',
-        image_url: '',
-        editedby_player: false,
-        created_at: Date.now(),
-      });
-    } else {
-      // Check if profile is complete
-      isProfileComplete = playerQuery.docs[0].data().editedby_player === true;
-    }
+    // Clear OTP from Firestore
+    await admin.firestore().collection('otps').doc(phoneNumber).delete();
 
-    res.status(200).json({ jwt: token, refreshToken, isProfileComplete });
+    res.status(200).json({
+      message: 'Login successful',
+      jwt: jwtToken,
+      refreshToken,
+    });
   } catch (error) {
     console.error('Error verifying OTP:', error);
-    res.status(500).json({ error: 'OTP verification failed' });
+    res.status(500).json({ error: 'Failed to verify OTP' });
   }
 });
 
@@ -164,14 +173,26 @@ app.post('/api/refresh-token', async (req, res) => {
 // Logout endpoint
 app.post('/api/logout', async (req, res) => {
   const { phoneNumber } = req.body;
-  if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
+
+  if (!phoneNumber) {
+    return res.status(400).json({ error: 'Phone number is required' });
+  }
 
   try {
-    await db.collection('refreshTokens').doc(phoneNumber).delete();
+    // Delete the specific user's refresh token
+    const tokenDoc = await admin.firestore()
+      .collection('refreshTokens')
+      .doc(phoneNumber)
+      .get();
+
+    if (tokenDoc.exists) {
+      await admin.firestore().collection('refreshTokens').doc(phoneNumber).delete();
+    }
+
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error('Error logging out:', error);
-    res.status(500).json({ error: 'Logout failed' });
+    console.error('Error during logout:', error);
+    res.status(500).json({ error: 'Failed to log out' });
   }
 });
 
