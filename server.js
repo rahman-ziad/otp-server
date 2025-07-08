@@ -1,6 +1,5 @@
 const express = require('express');
 const admin = require('firebase-admin');
-const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
 const app = express();
 
@@ -43,6 +42,11 @@ function validatePhoneNumber(phoneNumber) {
   return phoneRegex.test(phoneNumber);
 }
 
+// Normalize phone number (remove + prefix if present)
+function normalizePhoneNumber(phoneNumber) {
+  return phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+}
+
 // Send OTP endpoint
 app.post('/api/send-otp', async (req, res) => {
   console.log('Request body:', req.body);
@@ -56,7 +60,7 @@ app.post('/api/send-otp', async (req, res) => {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
 
-  const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
   const otp = generateOTP();
   const sessionId = Math.random().toString(36).substring(2);
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5-minute expiry
@@ -105,7 +109,7 @@ app.post('/api/send-otp', async (req, res) => {
   }
 });
 
-// New endpoint to send general SMS (e.g., registration confirmation)
+// Send general SMS endpoint
 app.post('/api/send-sms', async (req, res) => {
   const { phoneNumber, message } = req.body;
 
@@ -117,7 +121,7 @@ app.post('/api/send-sms', async (req, res) => {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
 
-  const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber); // Ensure 880 format
 
   try {
     const response = await fetch(SMS_API_URL, {
