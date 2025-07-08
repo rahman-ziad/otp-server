@@ -1,5 +1,6 @@
 const express = require('express');
 const admin = require('firebase-admin');
+const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
 const app = express();
 
@@ -109,7 +110,7 @@ app.post('/api/send-otp', async (req, res) => {
   }
 });
 
-// Send general SMS endpoint
+// Send general SMS endpoint (no JWT verification)
 app.post('/api/send-sms', async (req, res) => {
   const { phoneNumber, message } = req.body;
 
@@ -182,8 +183,8 @@ app.post('/api/verify-otp', async (req, res) => {
     await otpCollection.doc(sessionId).delete();
 
     const jwtPayload = { phoneNumber };
-    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '1h' });
-    const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '30d' }); // Changed to 30 days
+    const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '90d' }); // Changed to 90 days
 
     await db.collection('refreshTokens').doc(phoneNumber).set({
       refreshToken,
@@ -233,7 +234,7 @@ app.post('/api/refresh-token', async (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    const newToken = jwt.sign({ phoneNumber: decoded.phoneNumber }, JWT_SECRET, { expiresIn: '1h' });
+    const newToken = jwt.sign({ phoneNumber: decoded.phoneNumber }, JWT_SECRET, { expiresIn: '30d' }); // Changed to 30 days
     res.status(200).json({ jwt: newToken });
   } catch (error) {
     console.error('Error refreshing token:', error);
