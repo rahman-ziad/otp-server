@@ -1,6 +1,7 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
+const fetch = require('node-fetch');
 const app = express();
 
 app.use(express.json());
@@ -46,7 +47,7 @@ function validatePhoneNumber(phoneNumber) {
 app.post('/api/send-otp', async (req, res) => {
   console.log('Request body:', req.body);
   const { phoneNumber } = req.body;
-  
+
   if (!phoneNumber) {
     return res.status(400).json({ error: 'Phone number required' });
   }
@@ -55,23 +56,19 @@ app.post('/api/send-otp', async (req, res) => {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
 
-  // Normalize phone number by removing '+' sign
   const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
-
   const otp = generateOTP();
   const sessionId = Math.random().toString(36).substring(2);
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5-minute expiry
 
   try {
-    // Store OTP in Firestore with original phoneNumber
-    await otpCollection.doc(sessionId).set({ 
-      phoneNumber, 
-      otp, 
+    await otpCollection.doc(sessionId).set({
+      phoneNumber,
+      otp,
       expiresAt,
-      createdAt: Date.now()
+      createdAt: Date.now(),
     });
 
-    // Send OTP via MiMSMS using fetch
     const response = await fetch(SMS_API_URL, {
       method: 'POST',
       headers: {
@@ -108,10 +105,61 @@ app.post('/api/send-otp', async (req, res) => {
   }
 });
 
+// New endpoint to send general SMS (e.g., registration confirmation)
+app.post('/api/send-sms', async (req, res) => {
+  const { phoneNumber, message } = req.body;
+
+  if (!phoneNumber || !message) {
+    return res.status(400).json({ error: 'Phone number and message are required' });
+  }
+
+  if (!validatePhoneNumber(phoneNumber)) {
+    return res.status(400).json({ error: 'Invalid phone number format' });
+  }
+
+  const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+
+  try {
+    const response = await fetch(SMS_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        UserName: SMS_USERNAME,
+        Apikey: SMS_API_KEY,
+        MobileNumber: normalizedPhoneNumber,
+        CampaignId: 'null',
+        SenderName: SMS_SENDER_NAME,
+        TransactionType: SMS_TRANSACTION_TYPE,
+        Message: message,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('SMS API request failed:', response.status, response.statusText);
+      return res.status(500).json({ error: 'Failed to send SMS - SMS service unavailable' });
+    }
+
+    const result = await response.json();
+
+    if (result.statusCode !== '200' || result.status !== 'Success') {
+      console.error('MiMSMS error:', result.responseResult);
+      return res.status(500).json({ error: `Failed to send SMS: ${result.responseResult}` });
+    }
+
+    res.status(200).json({ message: 'SMS sent successfully' });
+  } catch (error) {
+    console.error('Error sending SMS:', error);
+    res.status(500).json({ error: 'Failed to send SMS' });
+  }
+});
+
 // Verify OTP endpoint
 app.post('/api/verify-otp', async (req, res) => {
   const { phoneNumber, otp, sessionId } = req.body;
-  
+
   if (!phoneNumber || !otp || !sessionId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
@@ -127,29 +175,24 @@ app.post('/api/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired OTP' });
     }
 
-    // Delete used OTP
     await otpCollection.doc(sessionId).delete();
 
-    // Create JWT tokens
     const jwtPayload = { phoneNumber };
     const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '1h' });
     const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '30d' });
 
-    // Store refresh token
     await db.collection('refreshTokens').doc(phoneNumber).set({
       refreshToken,
       createdAt: Date.now(),
     });
 
-    // Check if player document exists
     const playerQuery = await db.collection('players')
       .where('phone_number', '==', phoneNumber)
       .limit(1)
       .get();
-    
+
     let isProfileComplete = false;
     if (playerQuery.empty) {
-      // Create new player document for new user
       await db.collection('players').add({
         phone_number: phoneNumber,
         name: '',
@@ -159,7 +202,6 @@ app.post('/api/verify-otp', async (req, res) => {
         created_at: Date.now(),
       });
     } else {
-      // Check if profile is complete
       const playerData = playerQuery.docs[0].data();
       isProfileComplete = playerData.editedby_player === true;
     }
@@ -174,7 +216,7 @@ app.post('/api/verify-otp', async (req, res) => {
 // Refresh token endpoint
 app.post('/api/refresh-token', async (req, res) => {
   const { refreshToken } = req.body;
-  
+
   if (!refreshToken) {
     return res.status(400).json({ error: 'Refresh token required' });
   }
@@ -204,7 +246,6 @@ app.post('/api/logout', async (req, res) => {
   }
 
   try {
-    // Delete the specific user's refresh token
     const tokenDoc = await db.collection('refreshTokens').doc(phoneNumber).get();
 
     if (tokenDoc.exists) {
