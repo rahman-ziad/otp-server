@@ -1,13 +1,13 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
-const request = require('request'); // Use request instead of node-fetch
+const request = require('request');
 const cors = require('cors');
 const app = express();
 
 // Enable CORS for all routes
 app.use(cors({
-  origin: '*', // Allow all origins for testing; replace with specific origins in production
+  origin: '*', // Allow all origins for testing; replace with your Flutter web app domain in production
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept']
 }));

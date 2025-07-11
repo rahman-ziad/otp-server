@@ -1,20 +1,19 @@
 {
   "name": "otp-server",
   "version": "1.0.0",
-  "description": "",
+  "description": "OTP server for sportsstation",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.17.1",
     "firebase-admin": "^11.0.0",
     "jsonwebtoken": "^9.0.0",
-    "request": "^2.88.2",
-    "cors": "^2.8.5"
+    "request": "^2.88.2"
   }
 }
