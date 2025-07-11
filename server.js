@@ -190,8 +190,8 @@ app.post('/api/verify-otp', async (req, res) => {
     await otpCollection.doc(sessionId).delete();
 
     const jwtPayload = { phoneNumber };
-    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '30d' }); // Changed to 30 days
-    const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '90d' }); // Changed to 90 days
+    const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '30d' });
+    const refreshToken = jwt.sign(jwtPayload, REFRESH_TOKEN_SECRET, { expiresIn: '90d' });
 
     await db.collection('refreshTokens').doc(phoneNumber).set({
       refreshToken,
@@ -241,7 +241,7 @@ app.post('/api/refresh-token', async (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    const newToken = jwt.sign({ phoneNumber: decoded.phoneNumber }, JWT_SECRET, { expiresIn: '30d' }); // Changed to 30 days
+    const newToken = jwt.sign({ phoneNumber: decoded.phoneNumber }, JWT_SECRET, { expiresIn: '30d' });
     res.status(200).json({ jwt: newToken });
   } catch (error) {
     console.error('Error refreshing token:', error);
