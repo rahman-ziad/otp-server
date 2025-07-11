@@ -2,8 +2,15 @@ const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
+const cors = require('cors'); // Add CORS package
 const app = express();
 
+// Enable CORS for all routes
+app.use(cors({
+  origin: '*', // Allow all origins for testing; replace with specific origins in production (e.g., 'https://your-flutter-web-app.com')
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Accept']
+}));
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
