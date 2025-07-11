@@ -15,5 +15,7 @@
     "firebase-admin": "^13.4.0",
     "jsonwebtoken": "^9.0.2",
     "request": "^2.88.2"
+    "node-fetch": "^2.6.7",
+    "cors": "^2.8.5"
   }
 }
