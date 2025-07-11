@@ -1,13 +1,13 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
-const fetch = require('node-fetch');
-const cors = require('cors'); // Add CORS package
+const request = require('request'); // Use request instead of node-fetch
+const cors = require('cors');
 const app = express();
 
 // Enable CORS for all routes
 app.use(cors({
-  origin: '*', // Allow all origins for testing; replace with specific origins in production (e.g., 'https://your-flutter-web-app.com')
+  origin: '*', // Allow all origins for testing; replace with specific origins in production
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Accept']
 }));
@@ -81,36 +81,44 @@ app.post('/api/send-otp', async (req, res) => {
       createdAt: Date.now(),
     });
 
-    const response = await fetch(SMS_API_URL, {
+    const requestBody = {
+      UserName: SMS_USERNAME,
+      Apikey: SMS_API_KEY,
+      MobileNumber: normalizedPhoneNumber,
+      CampaignId: 'null',
+      SenderName: SMS_SENDER_NAME,
+      TransactionType: SMS_TRANSACTION_TYPE,
+      Message: `Welcome to sportsstation. Your OTP is ${otp}`,
+    };
+
+    request({
+      url: SMS_API_URL,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: JSON.stringify({
-        UserName: SMS_USERNAME,
-        Apikey: SMS_API_KEY,
-        MobileNumber: normalizedPhoneNumber,
-        CampaignId: 'null',
-        SenderName: SMS_SENDER_NAME,
-        TransactionType: SMS_TRANSACTION_TYPE,
-        Message: `Welcome to sportsstation. Your OTP is ${otp}`,
-      }),
+      body: JSON.stringify(requestBody),
+    }, (error, response, body) => {
+      if (error) {
+        console.error('SMS API request failed:', error);
+        return res.status(500).json({ error: 'Failed to send OTP - SMS service unavailable' });
+      }
+
+      try {
+        const result = JSON.parse(body);
+
+        if (result.statusCode !== '200' || result.status !== 'Success') {
+          console.error('MiMSMS error:', result.responseResult);
+          return res.status(500).json({ error: `Failed to send OTP: ${result.responseResult}` });
+        }
+
+        res.status(200).json({ sessionId });
+      } catch (parseError) {
+        console.error('Error parsing SMS API response:', parseError);
+        res.status(500).json({ error: 'Failed to send OTP - Invalid response from SMS service' });
+      }
     });
-
-    if (!response.ok) {
-      console.error('SMS API request failed:', response.status, response.statusText);
-      return res.status(500).json({ error: 'Failed to send OTP - SMS service unavailable' });
-    }
-
-    const result = await response.json();
-
-    if (result.statusCode !== '200' || result.status !== 'Success') {
-      console.error('MiMSMS error:', result.responseResult);
-      return res.status(500).json({ error: `Failed to send OTP: ${result.responseResult}` });
-    }
-
-    res.status(200).json({ sessionId });
   } catch (error) {
     console.error('Error sending OTP:', error);
     res.status(500).json({ error: 'Failed to send OTP' });
@@ -129,43 +137,46 @@ app.post('/api/send-sms', async (req, res) => {
     return res.status(400).json({ error: 'Invalid phone number format' });
   }
 
-  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber); // Ensure 880 format
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
 
-  try {
-    const response = await fetch(SMS_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({
-        UserName: SMS_USERNAME,
-        Apikey: SMS_API_KEY,
-        MobileNumber: normalizedPhoneNumber,
-        CampaignId: 'null',
-        SenderName: SMS_SENDER_NAME,
-        TransactionType: SMS_TRANSACTION_TYPE,
-        Message: message,
-      }),
-    });
+  const requestBody = {
+    UserName: SMS_USERNAME,
+    Apikey: SMS_API_KEY,
+    MobileNumber: normalizedPhoneNumber,
+    CampaignId: 'null',
+    SenderName: SMS_SENDER_NAME,
+    TransactionType: SMS_TRANSACTION_TYPE,
+    Message: message,
+  };
 
-    if (!response.ok) {
-      console.error('SMS API request failed:', response.status, response.statusText);
+  request({
+    url: SMS_API_URL,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  }, (error, response, body) => {
+    if (error) {
+      console.error('SMS API request failed:', error);
       return res.status(500).json({ error: 'Failed to send SMS - SMS service unavailable' });
     }
 
-    const result = await response.json();
+    try {
+      const result = JSON.parse(body);
 
-    if (result.statusCode !== '200' || result.status !== 'Success') {
-      console.error('MiMSMS error:', result.responseResult);
-      return res.status(500).json({ error: `Failed to send SMS: ${result.responseResult}` });
+      if (result.statusCode !== '200' || result.status !== 'Success') {
+        console.error('MiMSMS error:', result.responseResult);
+        return res.status(500).json({ error: `Failed to send SMS: ${result.responseResult}` });
+      }
+
+      res.status(200).json({ message: 'SMS sent successfully' });
+    } catch (parseError) {
+      console.error('Error parsing SMS API response:', parseError);
+      res.status(500).json({ error: 'Failed to send SMS - Invalid response from SMS service' });
     }
-
-    res.status(200).json({ message: 'SMS sent successfully' });
-  } catch (error) {
-    console.error('Error sending SMS:', error);
-    res.status(500).json({ error: 'Failed to send SMS' });
-  }
+  });
 });
 
 // Verify OTP endpoint
