@@ -1,15 +1,16 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
-const request = require('request');
-const cors = require('cors');
+const fetch = require('node-fetch');
+const cors = require('cors'); // Added CORS package
+const { v4: uuidv4 } = require('uuid'); // Added UUID for session IDs
 const app = express();
 
-// Enable CORS for all routes
+// Enable CORS for all origins (adjust for production)
 app.use(cors({
-  origin: '*', // Allow all origins for testing; replace with your Flutter web app domain in production
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept']
+  origin: '*', // Replace with your Flutter app's domain in production
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
 }));
 app.use(express.json());
 
@@ -20,7 +21,7 @@ try {
     credential: admin.credential.cert(credentials),
   });
 } catch (error) {
-  console.error('Error initializing Firebase:', error);
+  console.error('Error initializing Firebase:', error.message, error.stack);
   process.exit(1);
 }
 
@@ -70,7 +71,7 @@ app.post('/api/send-otp', async (req, res) => {
 
   const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
   const otp = generateOTP();
-  const sessionId = Math.random().toString(36).substring(2);
+  const sessionId = uuidv4(); // Use UUID for session ID
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5-minute expiry
 
   try {
@@ -81,47 +82,37 @@ app.post('/api/send-otp', async (req, res) => {
       createdAt: Date.now(),
     });
 
-    const requestBody = {
-      UserName: SMS_USERNAME,
-      Apikey: SMS_API_KEY,
-      MobileNumber: normalizedPhoneNumber,
-      CampaignId: 'null',
-      SenderName: SMS_SENDER_NAME,
-      TransactionType: SMS_TRANSACTION_TYPE,
-      Message: `Welcome to sportsstation. Your OTP is ${otp}`,
-    };
-
-    request({
-      url: SMS_API_URL,
+    const response = await fetch(SMS_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: JSON.stringify(requestBody),
-    }, (error, response, body) => {
-      if (error) {
-        console.error('SMS API request failed:', error);
-        return res.status(500).json({ error: 'Failed to send OTP - SMS service unavailable' });
-      }
-
-      try {
-        const result = JSON.parse(body);
-
-        if (result.statusCode !== '200' || result.status !== 'Success') {
-          console.error('MiMSMS error:', result.responseResult);
-          return res.status(500).json({ error: `Failed to send OTP: ${result.responseResult}` });
-        }
-
-        res.status(200).json({ sessionId });
-      } catch (parseError) {
-        console.error('Error parsing SMS API response:', parseError);
-        res.status(500).json({ error: 'Failed to send OTP - Invalid response from SMS service' });
-      }
+      body: JSON.stringify({
+        UserName: SMS_USERNAME,
+        Apikey: SMS_API_KEY,
+        MobileNumber: normalizedPhoneNumber,
+        CampaignId: 'null',
+        SenderName: SMS_SENDER_NAME,
+        TransactionType: SMS_TRANSACTION_TYPE,
+        Message: `Welcome to sportsstation. Your OTP is ${otp}`,
+      }),
     });
+
+    const result = await response.json();
+    console.log('Send OTP - MiMSMS Response:', JSON.stringify(result, null, 2));
+
+    if (!response.ok || result.statusCode !== '200') {
+      console.error('MiMSMS error:', result);
+      return res.status(500).json({ 
+        error: `Failed to send OTP: ${result.responseResult || result.message || 'SMS service unavailable'}` 
+      });
+    }
+
+    res.status(200).json({ sessionId });
   } catch (error) {
-    console.error('Error sending OTP:', error);
-    res.status(500).json({ error: 'Failed to send OTP' });
+    console.error('Error sending OTP:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to send OTP: ${error.message}` });
   }
 });
 
@@ -139,44 +130,39 @@ app.post('/api/send-sms', async (req, res) => {
 
   const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
 
-  const requestBody = {
-    UserName: SMS_USERNAME,
-    Apikey: SMS_API_KEY,
-    MobileNumber: normalizedPhoneNumber,
-    CampaignId: 'null',
-    SenderName: SMS_SENDER_NAME,
-    TransactionType: SMS_TRANSACTION_TYPE,
-    Message: message,
-  };
+  try {
+    const response = await fetch(SMS_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        UserName: SMS_USERNAME,
+        Apikey: SMS_API_KEY,
+        MobileNumber: normalizedPhoneNumber,
+        CampaignId: 'null',
+        SenderName: SMS_SENDER_NAME,
+        TransactionType: SMS_TRANSACTION_TYPE,
+        Message: message,
+      }),
+    });
 
-  request({
-    url: SMS_API_URL,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-  }, (error, response, body) => {
-    if (error) {
-      console.error('SMS API request failed:', error);
-      return res.status(500).json({ error: 'Failed to send SMS - SMS service unavailable' });
+    const result = await response.json();
+    console.log('Send SMS - MiMSMS Response:', JSON.stringify(result, null, 2));
+
+    if (!response.ok || result.statusCode !== '200') {
+      console.error('MiMSMS error:', result);
+      return res.status(500).json({ 
+        error: `Failed to send SMS: ${result.responseResult || result.message || 'SMS service unavailable'}` 
+      });
     }
 
-    try {
-      const result = JSON.parse(body);
-
-      if (result.statusCode !== '200' || result.status !== 'Success') {
-        console.error('MiMSMS error:', result.responseResult);
-        return res.status(500).json({ error: `Failed to send SMS: ${result.responseResult}` });
-      }
-
-      res.status(200).json({ message: 'SMS sent successfully' });
-    } catch (parseError) {
-      console.error('Error parsing SMS API response:', parseError);
-      res.status(500).json({ error: 'Failed to send SMS - Invalid response from SMS service' });
-    }
-  });
+    res.status(200).json({ message: 'SMS sent successfully', trxnId: result.trxnId });
+  } catch (error) {
+    console.error('Error sending SMS:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to send SMS: ${error.message}` });
+  }
 });
 
 // Verify OTP endpoint
@@ -231,8 +217,8 @@ app.post('/api/verify-otp', async (req, res) => {
 
     res.status(200).json({ jwt: token, refreshToken, isProfileComplete });
   } catch (error) {
-    console.error('Error verifying OTP:', error);
-    res.status(500).json({ error: 'OTP verification failed' });
+    console.error('Error verifying OTP:', error.message, error.stack);
+    res.status(500).json({ error: `OTP verification failed: ${error.message}` });
   }
 });
 
@@ -255,8 +241,8 @@ app.post('/api/refresh-token', async (req, res) => {
     const newToken = jwt.sign({ phoneNumber: decoded.phoneNumber }, JWT_SECRET, { expiresIn: '30d' });
     res.status(200).json({ jwt: newToken });
   } catch (error) {
-    console.error('Error refreshing token:', error);
-    res.status(401).json({ error: 'Invalid or expired refresh token' });
+    console.error('Error refreshing token:', error.message, error.stack);
+    res.status(401).json({ error: `Invalid or expired refresh token: ${error.message}` });
   }
 });
 
@@ -277,15 +263,15 @@ app.post('/api/logout', async (req, res) => {
 
     res.status(200).json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error('Error during logout:', error);
-    res.status(500).json({ error: 'Failed to log out' });
+    console.error('Error during logout:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to log out: ${error.message}` });
   }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('Unhandled error:', err.message, err.stack);
+  res.status(500).json({ error: `Internal server error: ${err.message}` });
 });
 
 // Health check endpoint
