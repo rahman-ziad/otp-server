@@ -2,15 +2,15 @@ const express = require('express');
 const admin = require('firebase-admin');
 const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
-const cors = require('cors'); // Added CORS package
-const { v4: uuidv4 } = require('uuid'); // Added UUID for session IDs
+const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
 const app = express();
 
 // Enable CORS for all origins (adjust for production)
 app.use(cors({
   origin: '*', // Replace with your Flutter app's domain in production
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());
 
@@ -31,6 +31,10 @@ const SMS_USERNAME = process.env.SMS_USERNAME || 'fahimmaruf@gmail.com';
 const SMS_API_KEY = process.env.SMS_API_KEY || 'VAUSWN3QKZ7FQ0H';
 const SMS_SENDER_NAME = process.env.SMS_SENDER_NAME || '8809601003504';
 const SMS_TRANSACTION_TYPE = 'T'; // Transactional SMS
+
+// Challonge API configuration
+const CHALLONGE_API_KEY = process.env.CHALLONGE_API_KEY || 'your_challonge_api_key';
+const CHALLONGE_BASE_URL = 'https://api.challonge.com/v1';
 
 // JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
@@ -56,7 +60,7 @@ function normalizePhoneNumber(phoneNumber) {
   return phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
 }
 
-// Send OTP endpoint
+// Send OTP endpoint with improved error handling
 app.post('/api/send-otp', async (req, res) => {
   console.log('Request body:', req.body);
   const { phoneNumber } = req.body;
@@ -71,17 +75,107 @@ app.post('/api/send-otp', async (req, res) => {
 
   const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
   const otp = generateOTP();
-  const sessionId = uuidv4(); // Use UUID for session ID
+  const sessionId = uuidv4();
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5-minute expiry
 
   try {
+    // Store OTP in Firestore first
     await otpCollection.doc(sessionId).set({
       phoneNumber,
       otp,
       expiresAt,
       createdAt: Date.now(),
+      smsSent: false,
     });
 
+    // Send SMS with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+
+    try {
+      const response = await fetch(SMS_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          UserName: SMS_USERNAME,
+          Apikey: SMS_API_KEY,
+          MobileNumber: normalizedPhoneNumber,
+          CampaignId: 'null',
+          SenderName: SMS_SENDER_NAME,
+          TransactionType: SMS_TRANSACTION_TYPE,
+          Message: `Welcome to sportsstation. Your OTP is ${otp}`,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      const result = await response.json();
+      console.log('Send OTP - MiMSMS Response:', JSON.stringify(result, null, 2));
+
+      // Check if SMS was sent successfully
+      if (response.ok && result.statusCode === '200') {
+        // Update Firestore to mark SMS as sent
+        await otpCollection.doc(sessionId).update({
+          smsSent: true,
+          smsResponse: result,
+        });
+
+        return res.status(200).json({ 
+          sessionId,
+          message: 'OTP sent successfully',
+        });
+      } else {
+        console.error('MiMSMS error:', result);
+        // Keep the OTP in database for manual retry
+        return res.status(500).json({ 
+          error: `Failed to send OTP: ${result.responseResult || result.message || 'SMS service unavailable'}`,
+          sessionId, // Still return sessionId for potential retry
+        });
+      }
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === 'AbortError') {
+        console.error('SMS API timeout');
+        return res.status(504).json({ 
+          error: 'SMS service timeout. Please try again.',
+          sessionId,
+        });
+      }
+      throw fetchError;
+    }
+  } catch (error) {
+    console.error('Error sending OTP:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to send OTP: ${error.message}` });
+  }
+});
+
+// Retry OTP sending endpoint
+app.post('/api/retry-otp', async (req, res) => {
+  const { sessionId } = req.body;
+
+  if (!sessionId) {
+    return res.status(400).json({ error: 'Session ID required' });
+  }
+
+  try {
+    const otpDoc = await otpCollection.doc(sessionId).get();
+    if (!otpDoc.exists) {
+      return res.status(400).json({ error: 'Invalid session ID' });
+    }
+
+    const data = otpDoc.data();
+    
+    // Check if OTP is still valid
+    if (Date.now() > data.expiresAt) {
+      return res.status(400).json({ error: 'OTP expired. Please request a new one.' });
+    }
+
+    const normalizedPhoneNumber = normalizePhoneNumber(data.phoneNumber);
+
+    // Retry sending SMS
     const response = await fetch(SMS_API_URL, {
       method: 'POST',
       headers: {
@@ -95,24 +189,27 @@ app.post('/api/send-otp', async (req, res) => {
         CampaignId: 'null',
         SenderName: SMS_SENDER_NAME,
         TransactionType: SMS_TRANSACTION_TYPE,
-        Message: `Welcome to sportsstation. Your OTP is ${otp}`,
+        Message: `Welcome to sportsstation. Your OTP is ${data.otp}`,
       }),
     });
 
     const result = await response.json();
-    console.log('Send OTP - MiMSMS Response:', JSON.stringify(result, null, 2));
+    console.log('Retry OTP - MiMSMS Response:', JSON.stringify(result, null, 2));
 
-    if (!response.ok || result.statusCode !== '200') {
-      console.error('MiMSMS error:', result);
+    if (response.ok && result.statusCode === '200') {
+      await otpCollection.doc(sessionId).update({
+        smsSent: true,
+        smsResponse: result,
+      });
+      return res.status(200).json({ message: 'OTP resent successfully' });
+    } else {
       return res.status(500).json({ 
-        error: `Failed to send OTP: ${result.responseResult || result.message || 'SMS service unavailable'}` 
+        error: `Failed to resend OTP: ${result.responseResult || result.message}` 
       });
     }
-
-    res.status(200).json({ sessionId });
   } catch (error) {
-    console.error('Error sending OTP:', error.message, error.stack);
-    res.status(500).json({ error: `Failed to send OTP: ${error.message}` });
+    console.error('Error retrying OTP:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to retry OTP: ${error.message}` });
   }
 });
 
@@ -268,6 +365,118 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
+// ============================================================================
+// CHALLONGE TOURNAMENT PROXY ENDPOINTS
+// ============================================================================
+
+// Fetch tournament participants
+app.get('/api/tournaments/:slug/participants.json', async (req, res) => {
+  const { slug } = req.params;
+  const queryParams = new URLSearchParams({
+    api_key: CHALLONGE_API_KEY,
+    ...req.query,
+  });
+
+  try {
+    const response = await fetch(
+      `${CHALLONGE_BASE_URL}/tournaments/${slug}/participants.json?${queryParams}`,
+      {
+        headers: {
+          'User-Agent': 'SportsStationBackend/1.0',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Challonge participants error:', errorText);
+      return res.status(response.status).json({ 
+        error: `Challonge API error: ${response.statusText}`,
+        details: errorText,
+      });
+    }
+
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (error) {
+    console.error('Error fetching participants:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to fetch participants: ${error.message}` });
+  }
+});
+
+// Fetch tournament matches
+app.get('/api/tournaments/:slug/matches.json', async (req, res) => {
+  const { slug } = req.params;
+  const queryParams = new URLSearchParams({
+    api_key: CHALLONGE_API_KEY,
+    ...req.query,
+  });
+
+  try {
+    const response = await fetch(
+      `${CHALLONGE_BASE_URL}/tournaments/${slug}/matches.json?${queryParams}`,
+      {
+        headers: {
+          'User-Agent': 'SportsStationBackend/1.0',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Challonge matches error:', errorText);
+      return res.status(response.status).json({ 
+        error: `Challonge API error: ${response.statusText}`,
+        details: errorText,
+      });
+    }
+
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (error) {
+    console.error('Error fetching matches:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to fetch matches: ${error.message}` });
+  }
+});
+
+// Fetch tournament details (optional - for additional info)
+app.get('/api/tournaments/:slug.json', async (req, res) => {
+  const { slug } = req.params;
+  const queryParams = new URLSearchParams({
+    api_key: CHALLONGE_API_KEY,
+    ...req.query,
+  });
+
+  try {
+    const response = await fetch(
+      `${CHALLONGE_BASE_URL}/tournaments/${slug}.json?${queryParams}`,
+      {
+        headers: {
+          'User-Agent': 'SportsStationBackend/1.0',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Challonge tournament error:', errorText);
+      return res.status(response.status).json({ 
+        error: `Challonge API error: ${response.statusText}`,
+        details: errorText,
+      });
+    }
+
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (error) {
+    console.error('Error fetching tournament:', error.message, error.stack);
+    res.status(500).json({ error: `Failed to fetch tournament: ${error.message}` });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message, err.stack);
@@ -276,10 +485,20 @@ app.use((err, req, res, next) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    services: {
+      firebase: 'connected',
+      sms: SMS_API_URL,
+      challonge: CHALLONGE_BASE_URL,
+    },
+  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`CORS enabled for: ${process.env.CORS_ORIGIN || '*'}`);
 });
