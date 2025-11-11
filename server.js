@@ -4,15 +4,22 @@ const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
+const cron = require('node-cron');
+const healthMonitor = require('./healthMonitor');
+const requestTracker = require('./middleware/requestTracker');
+const { requireAuth } = require('./middleware/auth');
 const app = express();
 
 // Enable CORS for all origins (adjust for production)
 app.use(cors({
   origin: '*', // Replace with your Flutter app's domain in production
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
 app.use(express.json());
+
+// Enable request tracking middleware
+app.use(requestTracker);
 
 // Initialize Firebase Admin SDK
 try {
@@ -20,8 +27,10 @@ try {
   admin.initializeApp({
     credential: admin.credential.cert(credentials),
   });
+  console.log('Firebase initialized successfully');
 } catch (error) {
   console.error('Error initializing Firebase:', error.message, error.stack);
+  healthMonitor.sendCriticalAlert('firebase_initialization_error', error);
   process.exit(1);
 }
 
@@ -43,6 +52,9 @@ const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || 'your_refresh_t
 // Firestore collection
 const db = admin.firestore();
 const otpCollection = db.collection('otps');
+
+// Initialize health monitor with Firestore
+healthMonitor.initialize(db);
 
 // Generate 6-digit OTP
 function generateOTP() {
@@ -140,12 +152,28 @@ app.post('/api/send-otp', async (req, res) => {
           smsResponse: result,
         });
 
+        // Track SMS success
+        healthMonitor.trackSMS(true);
+
         return res.status(200).json({ 
           sessionId,
           message: 'OTP sent successfully',
         });
       } else {
         console.error('MiMSMS error:', result);
+        
+        // Track SMS failure
+        const smsError = new Error(result.responseResult || result.message || 'SMS service unavailable');
+        healthMonitor.trackSMS(false, smsError);
+        
+        // Check if this is a critical error
+        if (healthMonitor.isCriticalError('sms_send_failure')) {
+          await healthMonitor.sendCriticalAlert('sms_send_failure', smsError, {
+            endpoint: '/api/send-otp',
+            phoneNumber: normalizedPhoneNumber,
+          });
+        }
+        
         // Keep the OTP in database for manual retry
         return res.status(500).json({ 
           error: `Failed to send OTP: ${result.responseResult || result.message || 'SMS service unavailable'}`,
@@ -156,6 +184,14 @@ app.post('/api/send-otp', async (req, res) => {
       clearTimeout(timeoutId);
       if (fetchError.name === 'AbortError') {
         console.error('SMS API timeout');
+        
+        // Track timeout as SMS failure
+        healthMonitor.trackSMS(false, fetchError);
+        await healthMonitor.sendCriticalAlert('sms_send_failure', fetchError, {
+          endpoint: '/api/send-otp',
+          reason: 'timeout',
+        });
+        
         return res.status(504).json({ 
           error: 'SMS service timeout. Please try again.',
           sessionId,
@@ -165,6 +201,10 @@ app.post('/api/send-otp', async (req, res) => {
     }
   } catch (error) {
     console.error('Error sending OTP:', error.message, error.stack);
+    
+    // Track general error
+    healthMonitor.trackError('otp_send_error', error, { endpoint: '/api/send-otp' });
+    
     res.status(500).json({ error: `Failed to send OTP: ${error.message}` });
   }
 });
@@ -221,14 +261,18 @@ app.post('/api/retry-otp', async (req, res) => {
         smsSent: true,
         smsResponse: result,
       });
+      healthMonitor.trackSMS(true);
       return res.status(200).json({ message: 'OTP resent successfully' });
     } else {
+      const smsError = new Error(result.responseResult || result.message);
+      healthMonitor.trackSMS(false, smsError);
       return res.status(500).json({ 
         error: `Failed to resend OTP: ${result.responseResult || result.message}` 
       });
     }
   } catch (error) {
     console.error('Error retrying OTP:', error.message, error.stack);
+    healthMonitor.trackError('otp_retry_error', error, { endpoint: '/api/retry-otp' });
     res.status(500).json({ error: `Failed to retry OTP: ${error.message}` });
   }
 });
@@ -273,14 +317,18 @@ app.post('/api/send-sms', async (req, res) => {
 
     if (!response.ok || result.statusCode !== '200') {
       console.error('MiMSMS error:', result);
+      const smsError = new Error(result.responseResult || result.message || 'SMS service unavailable');
+      healthMonitor.trackSMS(false, smsError);
       return res.status(500).json({ 
         error: `Failed to send SMS: ${result.responseResult || result.message || 'SMS service unavailable'}` 
       });
     }
 
+    healthMonitor.trackSMS(true);
     res.status(200).json({ message: 'SMS sent successfully', trxnId: result.trxnId });
   } catch (error) {
     console.error('Error sending SMS:', error.message, error.stack);
+    healthMonitor.trackError('sms_send_error', error, { endpoint: '/api/send-sms' });
     res.status(500).json({ error: `Failed to send SMS: ${error.message}` });
   }
 });
@@ -506,17 +554,61 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: `Internal server error: ${err.message}` });
 });
 
+// On-demand health report endpoint
+app.post('/api/report-now', requireAuth, async (req, res) => {
+  try {
+    await healthMonitor.sendHourlyReport();
+    const report = await healthMonitor.generateHealthReport();
+    res.status(200).json({ 
+      message: 'Health report sent to Discord',
+      report,
+    });
+  } catch (error) {
+    console.error('Error generating on-demand report:', error.message, error.stack);
+    healthMonitor.trackError('report_generation_error', error, { endpoint: '/api/report-now' });
+    res.status(500).json({ error: `Failed to generate report: ${error.message}` });
+  }
+});
+
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const report = await healthMonitor.generateHealthReport();
   res.status(200).json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
+    uptime: report.uptime,
+    outgoingIP: report.outgoingIP,
     services: {
-      firebase: 'connected',
-      sms: SMS_API_URL,
+      firebase: report.services.firebase,
+      sms: report.services.sms,
       challonge: CHALLONGE_BASE_URL,
     },
+    metrics: report.metrics,
   });
+});
+
+// ============================================================================
+// SCHEDULED JOBS
+// ============================================================================
+
+// Hourly health report (at minute 0 of every hour)
+cron.schedule('0 * * * *', async () => {
+  console.log('Running scheduled hourly health report');
+  try {
+    await healthMonitor.sendHourlyReport();
+  } catch (error) {
+    console.error('Error in scheduled health report:', error.message);
+  }
+});
+
+// Daily log purging (at 2:00 AM every day)
+cron.schedule('0 2 * * *', async () => {
+  console.log('Running scheduled log purge');
+  try {
+    await healthMonitor.purgeOldLogs();
+  } catch (error) {
+    console.error('Error in scheduled log purge:', error.message);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -524,4 +616,15 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`CORS enabled for: ${process.env.CORS_ORIGIN || '*'}`);
+  console.log('Health monitoring system initialized');
+  console.log('Scheduled jobs:');
+  console.log('  - Hourly health reports (every hour at :00)');
+  console.log('  - Daily log purging (daily at 2:00 AM)');
+  
+  // Send initial startup notification
+  if (process.env.DISCORD_WEBHOOK_URL) {
+    healthMonitor.sendHourlyReport().catch(err => {
+      console.error('Failed to send startup health report:', err.message);
+    });
+  }
 });
