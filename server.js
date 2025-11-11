@@ -60,9 +60,26 @@ function normalizePhoneNumber(phoneNumber) {
   return phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
 }
 
+// Function to get and log outgoing IP
+async function logOutgoingIP(requestType) {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json');
+    const data = await response.json();
+    console.log(`[${new Date().toISOString()}] [${requestType}] Outgoing IP: ${data.ip}`);
+    return data.ip;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] [${requestType}] Error getting outgoing IP:`, error.message);
+    return 'unknown';
+  }
+}
+
 // Send OTP endpoint with improved error handling
 app.post('/api/send-otp', async (req, res) => {
   console.log('Request body:', req.body);
+  
+  // Log outgoing IP before making SMS request
+  await logOutgoingIP('SEND_OTP');
+
   const { phoneNumber } = req.body;
 
   if (!phoneNumber) {
@@ -156,6 +173,9 @@ app.post('/api/send-otp', async (req, res) => {
 app.post('/api/retry-otp', async (req, res) => {
   const { sessionId } = req.body;
 
+  // Log outgoing IP before making SMS request
+  await logOutgoingIP('RETRY_OTP');
+
   if (!sessionId) {
     return res.status(400).json({ error: 'Session ID required' });
   }
@@ -216,6 +236,9 @@ app.post('/api/retry-otp', async (req, res) => {
 // Send general SMS endpoint (no JWT verification)
 app.post('/api/send-sms', async (req, res) => {
   const { phoneNumber, message } = req.body;
+
+  // Log outgoing IP before making SMS request
+  await logOutgoingIP('SEND_SMS');
 
   if (!phoneNumber || !message) {
     return res.status(400).json({ error: 'Phone number and message are required' });
